@@ -1,17 +1,30 @@
 package com.sajjantawar.order.api;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sajjantawar.order.domain.*;
+import com.sajjantawar.order.messaging.OrderCreatedEvent;
+import com.sajjantawar.order.outbox.*;
 import com.sajjantawar.order.repository.OrderRepository;
 import jakarta.validation.Valid;
 import org.springframework.http.*;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import java.util.*;
-@RestController @RequestMapping("/api/v1/orders")
+@RestController
+@RequestMapping("/api/v1/orders")
 public class OrderController {
- private final OrderRepository repository;
- public OrderController(OrderRepository repository){this.repository=repository;}
- @PostMapping public ResponseEntity<OrderResponse> create(@Valid @RequestBody CreateOrderRequest request){
+ private final OrderRepository repository; private final OutboxRepository outbox; private final ObjectMapper mapper;
+ public OrderController(OrderRepository repository,OutboxRepository outbox,ObjectMapper mapper){this.repository=repository;this.outbox=outbox;this.mapper=mapper;}
+ @PostMapping
+ @Transactional
+ public ResponseEntity<OrderResponse> create(@Valid @RequestBody CreateOrderRequest request){
   CustomerOrder order=new CustomerOrder(UUID.randomUUID(),request.customerId(),request.totalAmount(),request.currency());
-  return ResponseEntity.status(HttpStatus.CREATED).body(OrderResponse.from(repository.save(order)));
+  repository.save(order);
+  try{
+   var event=new OrderCreatedEvent(UUID.randomUUID(),order.getId(),order.getCreatedAt(),order.getId(),order.getCustomerId(),order.getTotalAmount(),order.getCurrency());
+   outbox.save(new OutboxEvent(UUID.randomUUID(),order.getId(),"order.created",mapper.writeValueAsString(event)));
+  }catch(JsonProcessingException e){throw new IllegalStateException("Unable to create order event",e);}
+  return ResponseEntity.status(HttpStatus.CREATED).body(OrderResponse.from(order));
  }
  @GetMapping("/{id}") public OrderResponse get(@PathVariable UUID id){return repository.findById(id).map(OrderResponse::from).orElseThrow(()->new NoSuchElementException("Order not found"));}
  @GetMapping("/customer/{customerId}") public List<OrderResponse> byCustomer(@PathVariable String customerId){return repository.findByCustomerIdOrderByCreatedAtDesc(customerId).stream().map(OrderResponse::from).toList();}
